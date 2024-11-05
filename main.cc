@@ -61,7 +61,6 @@ private:
 
 /**
  * @brief Construct a new Image object
- * 
  */
 Image::Image() {}
 
