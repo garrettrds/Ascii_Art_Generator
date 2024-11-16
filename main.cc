@@ -8,13 +8,19 @@
 #include <vector>
 #include <fstream>
 #include <cmath>
+#include <chrono>
+#include <thread>
 
-extern "C" {
-    #define STB_IMAGE_IMPLEMENTATION
-    #include "stb_image.h"
-}
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 using namespace std;
+using namespace std::this_thread; // sleep_for, sleep_until
+using namespace std::chrono; // nanoseconds, system_clock, seconds
+
+const int CHANNELS = 3;
 
 #ifndef IMAGE_H
 #define IMAGE_H
@@ -26,8 +32,10 @@ public:
     Image(string filename);
     ~Image();
 
-    void to_ascii(const int& scalar);
+    void to_ascii_index(const int& scalar);
+    void to_ascii_png();
     bool load();
+    bool load_palette();
     int get_width() const;
     int get_height() const;
 private:
@@ -46,10 +54,15 @@ private:
     void dog(); // woof
 // Attributes
     vector<unsigned char> _image;
+    unsigned char *_output;
+    vector<vector<int> > _palette;
     vector<vector<int> > _greyscale_image;
     vector<vector<int> > _dog;
+    vector<vector<int> > _ascii_indeces;
     int _width;
     int _height;
+    int _palette_width;
+    int _palette_height;
     int _scaled_width;
     int _scaled_height;
     int _scalar;
@@ -83,7 +96,7 @@ Image::~Image() {}
  * 
  * @param scalar - how much to down scale the image
  */
-void Image::to_ascii(const int& scalar) {
+void Image::to_ascii_index(const int& scalar) {
     _scalar = scalar;
 
     _scaled_width = _width / _scalar;
@@ -91,6 +104,8 @@ void Image::to_ascii(const int& scalar) {
 
     string output_filename = "output.txt";
     ofstream out(output_filename);
+
+    vector<int> _ascii_indeces_row;
 
     int avg_lumin;
     int ascii_idx;
@@ -109,22 +124,28 @@ void Image::to_ascii(const int& scalar) {
                 char back_slash = 92;
                 
                 if ((theta < 0.1) || (theta > 0.9)) {
+                    _ascii_indeces_row.push_back(10);
                     out << "--";
                 } else if (theta < 0.4) {
+                    _ascii_indeces_row.push_back(11);
                     out << back_slash << back_slash;
                 } else if (theta < 0.6) {
+                    _ascii_indeces_row.push_back(12);
                     out << "||";
                 } else {
+                    _ascii_indeces_row.push_back(13);
                     out << "//";
                 }
             } else {
                 avg_lumin = _greyscale_image[i][j] * 100;
                 ascii_idx = (avg_lumin / (25500 / 
                 (_ascii_luminance.length() - 1)));
-                
+                _ascii_indeces_row.push_back(ascii_idx);
                 out << _ascii_luminance[ascii_idx] << _ascii_luminance[ascii_idx];
             }
         }
+        _ascii_indeces.push_back(_ascii_indeces_row);
+        _ascii_indeces_row.clear();
         out << endl;
     }
     out.close();
@@ -162,6 +183,40 @@ bool Image::load() {
     }
     stbi_image_free(data);
     return (data != nullptr);
+}
+
+bool Image::load_palette() {
+    vector<unsigned char> _palette_1D;
+    vector<int> palette_row;
+    size_t RGBA = 4;
+    string palette_file = "palette.png";
+
+    int n;
+    unsigned char* data = stbi_load(palette_file.c_str(),&_palette_width,&_palette_height,&n, 4);
+    if (data != nullptr) {
+        _palette_1D = vector<unsigned char>(data, data + _palette_width * _palette_height * 4);
+    }
+    stbi_image_free(data);
+    if (data == nullptr) {
+        return false;
+    }
+    int r, g, b;
+    for (int i = 0; i < _palette_height; i++) {
+        for (int j = 0; j < _palette_width; j++) {
+            size_t index = RGBA * (i * _palette_width + j);
+            r = static_cast<int>(_palette_1D[index + 0]);
+            g = static_cast<int>(_palette_1D[index + 1]);
+            b = static_cast<int>(_palette_1D[index + 2]);
+
+            int avg = (r + g + b) / (RGBA - 1);
+            // cout << r << " " << g << " " << b << "  ";
+            palette_row.push_back(avg);
+        }
+        _palette.push_back(palette_row);
+        palette_row.clear();
+    }
+
+    return true;
 }
 
 /**
@@ -378,6 +433,32 @@ void Image::dog() {
     }
 }
 
+void Image::to_ascii_png() {
+    int output_size = (_scaled_width * _scalar) * (_scaled_width * _scalar) * CHANNELS;
+    _output = new unsigned char[output_size];
+    unsigned char *pix = _output;
+    
+    for (int i = 0; i < _scaled_height; i++) {
+        for (int palette_row = 0; palette_row < 8; palette_row++) {
+            for (int j = 0; j < _scaled_width; j++) {
+
+                int ascii_texture_start_col = _ascii_indeces[i][j] * 8;
+
+                for (int palette_col = ascii_texture_start_col; palette_col < (ascii_texture_start_col + 8); palette_col++) {
+                    //cout << "row, col = " << palette_row << ", " << palette_col << "  ";
+                    for (int c = 0; c < 3; c++) {
+                        *(pix + c) = _palette[palette_row][palette_col];
+                    }
+                    pix += CHANNELS;
+                }
+            }
+        }
+        //cout << endl;
+    }
+    stbi_write_png("test2.png", _scaled_width * 8, _scaled_height * 8, CHANNELS, _output, _scaled_width * 8 * CHANNELS);
+    delete[] _output;
+}
+
 /**
  * @brief I/O and controls operation of the program
  * 
@@ -400,7 +481,36 @@ int main() {
     " x " << img.get_height() << endl;
     cin >> scalar;
 
-    img.to_ascii(scalar);
+    img.to_ascii_index(scalar);
+    bool palette_success = img.load_palette();
+    if (!palette_success) {
+        cout << "FFFUUUUUCCKKKK U\n";
+        return 1;
+    }
+    img.to_ascii_png();
 
+    // while(true) {
+    //     string img_filename_base = "ezgif-frame-0";
+    //     string img_filename;
+    //     int scalar = 8;
+    //     for (int i = 0; i < 17; i++) {
+    //         if (i < 9) {
+    //             //cout <<"here" << endl;
+    //             img_filename = img_filename_base + "0" + to_string(i + 1) + ".png";
+    //         } else {
+    //             img_filename = img_filename_base + to_string(i + 1) + ".png";
+    //         }
+            
+    //         //cout << img_filename << endl;
+    //         Image img(img_filename);
+    //         bool success = img.load();
+    //         if (!success) {
+    //             cout << "Error loading image\n";
+    //             return 1;
+    //         }
+    //         img.to_ascii_index(scalar);
+    //         //sleep_for(nanoseconds(33333333));
+    //     }
+    // }
     return 0;
 }
